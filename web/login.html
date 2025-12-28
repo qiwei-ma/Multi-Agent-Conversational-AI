@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, minimal-ui">
+    <meta http-equiv="ScreenOrientation" content="autoRotate:disabled">
+    <title>Multi-agent spoken bot</title>
+    <link rel="icon" type="image/x-icon" href="/favicon.ico">
+    <link href="static/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.bootcdn.net/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(
+                rgba(161, 196, 253, 0.7), 
+                rgba(194, 233, 251, 0.7)
+            );
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* 增强登录容器的毛玻璃效果 */
+        .login-container {
+            max-width: 400px;
+            width: 90%;
+            padding: 35px;
+            background: rgba(255, 255, 255, 0.2);
+            box-shadow: 0 8px 32px rgba(31, 38, 135, 0.2);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.3s ease;
+        }
+
+        .login-container:hover {
+            transform: translateY(-5px);
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+
+        .logo i {
+            font-size: 48px;
+            color: #237bdf;
+            margin-bottom: 15px;
+        }
+
+        h2 {
+            color: #2c3e50;
+            font-weight: 600;
+            margin-bottom: 30px;
+            font-size: 24px;
+        }
+
+        .form-control {
+            border-radius: 10px;
+            padding: 12px;
+            border: 2px solid #e3e3e3;
+            transition: all 0.3s ease;
+        }
+
+        .form-control:focus {
+            border-color: #4a90e2;
+            box-shadow: 0 0 0 0.2rem rgba(74, 144, 226, 0.25);
+        }
+
+        .btn-primary {
+            background: #237bdf;
+            border: none;
+            border-radius: 10px;
+            padding: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary:hover {
+            background: #106fdb;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(74, 144, 226, 0.4);
+        }
+
+        .form-label {
+            color: #2c3e50;
+            font-weight: 500;
+        }
+
+        .input-group {
+            position: relative;
+            margin-bottom: 20px;
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 15px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #95a5a6;
+            z-index: 10;
+        }
+
+        .input-with-icon {
+            padding-left: 40px;
+        }
+
+        .animate-in {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* 添加暗色模式支持 */
+        @media (prefers-color-scheme: dark) {
+            .login-container {
+                background: rgba(0, 0, 0, 0.2);
+            }
+            
+            .form-control {
+                background: rgba(255, 255, 255, 0.8);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container animate-in">
+        <div class="logo">
+            <i class="fas fa-robot"></i>
+        </div>
+        <h2 class="text-center">Multi-agent spoken bot</h2>
+        <form id="loginForm">
+            <div class="input-group">
+                <span class="input-icon">
+                    <i class="fas fa-phone"></i>
+                </span>
+                <input type="tel" class="form-control input-with-icon" id="phone" placeholder="请输入手机号" required>
+            </div>
+            <div class="input-group">
+                <span class="input-icon">
+                    <i class="fas fa-user"></i>
+                </span>
+                <input type="text" class="form-control input-with-icon" id="name" placeholder="请输入姓名" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">
+                <i class="fas fa-sign-in-alt me-2"></i>登录
+            </button>
+        </form>
+    </div>
+
+    <script>
+        document.getElementById('loginForm').onsubmit = async (e) => {
+            e.preventDefault();
+            
+            const response = await fetch('/login', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    phone: document.getElementById('phone').value,
+                    name: document.getElementById('name').value
+                })
+            });
+            
+            const result = await response.json();
+            if (result.code === 0) {
+                console.log(result.data.user_id);
+                // 保存用户ID到localStorage
+                localStorage.setItem('user_id', result.data.user_id);
+                // 跳转到主页面
+                const form = document.createElement('form');
+                form.method = 'GET';
+                form.action = 'dashboard.html';
+                document.body.appendChild(form);
+                form.submit();
+            } else {
+                alert(result.message);
+            }
+        };
+    </script>
+
+</html>

@@ -3,19 +3,27 @@ build/
 *.egg-info/
 *.so
 *.mp4
-
+*.out
+*.aac
 tmp*
 trial*/
 
-data
+/data/*
+!/data/custom_config.json
+
 data_utils/face_tracking/3DMM/*
 data_utils/face_parsing/79999_iter.pth
+web/static
 
 pretrained
 *.mp4
 .DS_Store
 workspace/log_ngp.txt
 .idea
-models/
+models/*
 *.log
 dist
+/.vscode
+audio2text/test3.mp3
+user.db
+.env

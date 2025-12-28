@@ -1,13 +1,13 @@
 ###############################################################################
 #  Copyright (C) 2024 LiveTalking@lipku https://github.com/lipku/LiveTalking
 #  email: lipku@foxmail.com
-# 
+#
 #  Licensed under the Apache License, Version 2.0 (the "License");
 #  you may not use this file except in compliance with the License.
 #  You may obtain a copy of the License at
-#  
+#
 #       http://www.apache.org/licenses/LICENSE-2.0
-# 
+#
 #  Unless required by applicable law or agreed to in writing, software
 #  distributed under the License is distributed on an "AS IS" BASIS,
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -16,28 +16,32 @@
 ###############################################################################
 
 # server.py
-from flask import Flask, render_template,send_from_directory,request, jsonify
+from flask import Flask, render_template, send_from_directory, request, jsonify
 from flask_sockets import Sockets
 import base64
 import json
-#import gevent
-#from gevent import pywsgi
-#from geventwebsocket.handler import WebSocketHandler
+
+# import gevent
+# from gevent import pywsgi
+# from geventwebsocket.handler import WebSocketHandler
 import re
 import numpy as np
-from threading import Thread,Event
-#import multiprocessing
+from threading import Thread, Event
+
+# import multiprocessing
 import torch.multiprocessing as mp
 
 from aiohttp import web
 import aiohttp
 import aiohttp_cors
-from aiortc import RTCPeerConnection, RTCSessionDescription,RTCIceServer,RTCConfiguration
+from aiortc import RTCPeerConnection, RTCSessionDescription
 from aiortc.rtcrtpsender import RTCRtpSender
 from webrtc import HumanPlayer
 from basereal import BaseReal
-from llm import llm_response
-
+from llm import llm_preprocess, llm_response, llm_init
+from speecheval.TencentSOE import tensent_soe_response
+from speecheval.text_utils import extract_result
+from audio2text.tencent_asr import call_tencent_asr
 import argparse
 import random
 import shutil
@@ -45,64 +49,77 @@ import asyncio
 import torch
 from typing import Dict
 from logger import logger
-import gc
+
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, desc
+from models import Base, User, Session, Message
+from datetime import datetime
 
 
 app = Flask(__name__)
-#sockets = Sockets(app)
-nerfreals:Dict[int, BaseReal] = {} #sessionid:BaseReal
+# sockets = Sockets(app)
+nerfreals: Dict[int, BaseReal] = {}  # sessionid:BaseReal
 opt = None
 model = None
 avatar = None
-        
+
+# 创建数据库引擎和会话
+engine = create_engine("sqlite:///user.db")
+Base.metadata.create_all(engine)
+DBSession = sessionmaker(bind=engine)
 
 #####webrtc###############################
 pcs = set()
 
-def randN(N)->int:
-    '''生成长度为 N的随机数 '''
+
+def randN(N) -> int:
+    """生成长度为 N的随机数"""
     min = pow(10, N - 1)
     max = pow(10, N)
     return random.randint(min, max - 1)
 
-def build_nerfreal(sessionid:int)->BaseReal:
-    opt.sessionid=sessionid
-    if opt.model == 'wav2lip':
+
+def build_nerfreal(sessionid: int) -> BaseReal:
+    opt.sessionid = sessionid
+    if opt.model == "wav2lip":
         from lipreal import LipReal
-        nerfreal = LipReal(opt,model,avatar)
-    elif opt.model == 'musetalk':
+
+        nerfreal = LipReal(opt, model, avatar)
+    elif opt.model == "musetalk":
         from musereal import MuseReal
-        nerfreal = MuseReal(opt,model,avatar)
-    # elif opt.model == 'ernerf':
-    #     from nerfreal import NeRFReal
-    #     nerfreal = NeRFReal(opt,model,avatar)
-    elif opt.model == 'ultralight':
+
+        nerfreal = MuseReal(opt, model, avatar)
+    elif opt.model == "ernerf":
+        from nerfreal import NeRFReal
+
+        nerfreal = NeRFReal(opt, model, avatar)
+    elif opt.model == "ultralight":
         from lightreal import LightReal
-        nerfreal = LightReal(opt,model,avatar)
+
+        nerfreal = LightReal(opt, model, avatar)
     return nerfreal
 
-#@app.route('/offer', methods=['POST'])
+
+# @app.route('/offer', methods=['POST'])
 async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
 
-    # if len(nerfreals) >= opt.max_session:
-    #     logger.info('reach max session')
-    #     return web.Response(
-    #         content_type="application/json",
-    #         text=json.dumps(
-    #             {"code": -1, "msg": "reach max session"}
-    #         ),
-    #     )
-    sessionid = randN(6) #len(nerfreals)
+    if len(nerfreals) >= opt.max_session:
+        logger.info("reach max session")
+        return -1
+
+    # 创建新会话
+    sessionid = randN(6)  # len(nerfreals)
+    logger.info("sessionid=%d", sessionid)
     nerfreals[sessionid] = None
-    logger.info('sessionid=%d, session num=%d',sessionid,len(nerfreals))
-    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
+    nerfreal = await asyncio.get_event_loop().run_in_executor(
+        None, build_nerfreal, sessionid
+    )
     nerfreals[sessionid] = nerfreal
-    
-    #ice_server = RTCIceServer(urls='stun:stun.l.google.com:19302')
-    ice_server = RTCIceServer(urls='stun:stun.miwifi.com:3478')
-    pc = RTCPeerConnection(configuration=RTCConfiguration(iceServers=[ice_server]))
+
+    # 建立 WebRTC 连接
+    pc = RTCPeerConnection()
     pcs.add(pc)
 
     @pc.on("connectionstatechange")
@@ -115,8 +132,8 @@ async def offer(request):
         if pc.connectionState == "closed":
             pcs.discard(pc)
             del nerfreals[sessionid]
-            # gc.collect()
 
+    # 添加音视频轨
     player = HumanPlayer(nerfreals[sessionid])
     audio_sender = pc.addTrack(player.audio)
     video_sender = pc.addTrack(player.video)
@@ -132,146 +149,310 @@ async def offer(request):
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
-    #return jsonify({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+    # return jsonify({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
 
     return web.Response(
         content_type="application/json",
         text=json.dumps(
-            {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type, "sessionid":sessionid}
+            {
+                "sdp": pc.localDescription.sdp,
+                "type": pc.localDescription.type,
+                "sessionid": sessionid,
+            }
         ),
     )
 
-async def human(request):
+
+async def speecheval(request):
+    """
+    使用api进行发音评估，并返回发音不标准的单词列表
+    """
+    params = await request.post()
+    sessionid = int(params.get("sessionid", 0))
+    audio_blob = params["audio"]
+    audio_bytes = audio_blob.file.read()
+
+    res = await asyncio.get_event_loop().run_in_executor(
+        None, tensent_soe_response, audio_bytes, nerfreals[sessionid]
+    )
+    res = extract_result(res)
+
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"code": 0, "data": res}),
+    )
+
+
+async def audio2text(request):
     try:
-        params = await request.json()
-
-        sessionid = params.get('sessionid',0)
-        if params.get('interrupt'):
-            nerfreals[sessionid].flush_talk()
-
-        if params['type']=='echo':
-            nerfreals[sessionid].put_msg_txt(params['text'])
-        elif params['type']=='chat':
-            asyncio.get_event_loop().run_in_executor(None, llm_response, params['text'],nerfreals[sessionid])                         
-            #nerfreals[sessionid].put_msg_txt(res)
-
+        params = await request.post()
+        sessionid = int(params.get("sessionid", 0))
+        audio_blob = params["audio"]
+        audio_bytes = audio_blob.file.read()
+        res = await asyncio.get_event_loop().run_in_executor(
+            None, call_tencent_asr, audio_bytes
+        )
         return web.Response(
             content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg":"ok"}
-            ),
+            text=json.dumps({"code": 0, "data": res}),
         )
     except Exception as e:
-        logger.exception('exception:')
         return web.Response(
             content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
+            status=500,
+            text=json.dumps({"code": -1, "msg": str(e)}),
         )
 
-async def interrupt_talk(request):
-    try:
-        params = await request.json()
 
-        sessionid = params.get('sessionid',0)
+async def preprocess(request):
+    """
+    预处理
+    """
+    params = await request.json()
+
+    sessionid = params.get("sessionid", 0)
+    if params.get("interrupt"):
         nerfreals[sessionid].flush_talk()
-        
+
+    if params["type"] == "echo":
+        nerfreals[sessionid].put_msg_txt(params["text"])
+    elif params["type"] == "chat":
+        res = await asyncio.get_event_loop().run_in_executor(
+            None, llm_preprocess, params["text"]
+        )
+        # nerfreals[sessionid].put_msg_txt(res)
+
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"code": 0, "data": res}),
+    )
+
+
+async def clear(request):
+    """
+    清除会话数据id
+    """
+    params = await request.json()
+
+    sessionid = params.get("sessionid", 0)
+    if params["text"] == "clear":
+        res = await asyncio.get_event_loop().run_in_executor(None, llm_init)
+
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"code": 0, "data": res}),
+    )
+
+
+# 添加新路由处理用户登录
+async def login(request):
+    params = await request.json()
+    phone = params.get("phone")
+    name = params.get("name")
+
+    # 验证手机号格式
+    phone_pattern = re.compile(r'^1[3-9]\d{9}$')
+    if not phone or not phone_pattern.match(str(phone)):
         return web.Response(
             content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg":"ok"}
-            ),
+            text=json.dumps({
+                "code": -1,
+                "message": "请输入正确的手机号码"
+            })
         )
-    except Exception as e:
-        logger.exception('exception:')
+
+    if not name:
         return web.Response(
             content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
+            text=json.dumps({
+                "code": -1,
+                "message": "用户名不能为空"
+            })
         )
+    
+    db_session = DBSession()
+    try:
+        # 查找或创建用户
+        user = db_session.query(User).filter(User.phone == phone).first()
+        if not user:
+            user = User(phone=phone, name=name)
+            db_session.add(user)
+            db_session.commit()
+
+        return web.Response(
+            content_type="application/json",
+            text=json.dumps({
+                "code": 0, 
+                "data": {"user_id": user.id}
+            }),
+        )
+    finally:
+        db_session.close()
+
+
+def add_message_to_session(db_session, conversation_id, user_content, system_content):
+    # 保存用户消息
+    user_message = Message(
+        session_id=str(conversation_id), content=user_content, type="user"
+    )
+    db_session.add(user_message)
+    db_session.commit()
+
+    # 保存系统回复
+    system_message = Message(
+        session_id=str(conversation_id), content=system_content, type="system"
+    )
+    db_session.add(system_message)
+    db_session.commit()
+
+
+async def human(request):
+    """
+    交互：生成回复
+
+    - llm_response 调用大语言模型（如 ChatGPT）。
+    - put_msg_txt 将文本送入 TTS 系统，生成语音并驱动 Avatar。
+
+    """
+    params = await request.json()
+
+    # 打印调试信息
+    print(f"Received params: {params}")
+
+    sessionid = params.get("sessionid", 0)
+    user_id = params.get("user_id")
+
+    # 打印 sessionid 和 user_id
+    print(f"Session ID: {sessionid}, User ID: {user_id}")
+
+    if params.get("interrupt"):
+        nerfreals[sessionid].flush_talk()
+        print("Interrupt received, flushed talk.")
+
+    if params["type"] == "echo":
+        nerfreals[sessionid].put_msg_txt(params["text"])
+        res = "ok"
+        conversation_id = 0
+        print(f"Echo type: text={params['text']}, response={res}")
+    elif params["type"] == "chat":
+        result = await asyncio.get_event_loop().run_in_executor(
+            None, llm_response, params["text"], nerfreals[sessionid], user_id
+        )
+        res = result["response"]
+        conversation_id = result["conversation_id"]
+
+        # 打印模型返回结果
+        print(
+            f"Chat type: text={params['text']}, response={res}, conversation_id={conversation_id}"
+        )
+
+        # 创建新会话记录
+        db_session = DBSession()
+        try:
+            user = db_session.get(User, user_id)
+            if user:
+                # 检查会话表是否为空
+                is_empty = db_session.query(Session).count() == 0
+                print(f"Is session table empty: {is_empty}")
+                if is_empty:
+                    # 如果表为空，创建新会话
+                    session_record = Session(
+                        session_id=str(conversation_id), user_id=user_id
+                    )
+                    db_session.add(session_record)
+                    db_session.commit()
+
+                    add_message_to_session(db_session, conversation_id, params["text"], res)
+                else:
+                    # 检查是否已存在相同的会话ID
+                    session = (
+                        db_session.query(Session)
+                        .filter(Session.session_id == str(conversation_id))
+                        .first()
+                    )
+                    if not session:
+                        session_record = Session(
+                            session_id=str(conversation_id), user_id=user_id
+                        )
+                        db_session.add(session_record)
+                        db_session.commit()
+
+                        add_message_to_session(
+                            db_session, conversation_id, params["text"], res
+                        )
+                    else:
+                        if str(session.user_id) == str(user_id):
+                            add_message_to_session(
+                                db_session, conversation_id, params["text"], res
+                            )
+
+                logger.info("conversation_id=%d", int(conversation_id))
+        finally:
+            db_session.close()
+
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"code": 0, "data": res, "conversation_id": conversation_id}),
+    )
+
 
 async def humanaudio(request):
     try:
-        form= await request.post()
-        sessionid = int(form.get('sessionid',0))
+        form = await request.post()
+        sessionid = int(form.get("sessionid", 0))
         fileobj = form["file"]
-        filename=fileobj.filename
-        filebytes=fileobj.file.read()
+        filename = fileobj.filename
+        filebytes = fileobj.file.read()
         nerfreals[sessionid].put_audio_file(filebytes)
 
         return web.Response(
             content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg":"ok"}
-            ),
+            text=json.dumps({"code": 0, "msg": "ok"}),
         )
     except Exception as e:
-        logger.exception('exception:')
         return web.Response(
             content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
+            text=json.dumps({"code": -1, "msg": "err", "data": "" + e.args[0] + ""}),
         )
+
 
 async def set_audiotype(request):
-    try:
-        params = await request.json()
+    params = await request.json()
 
-        sessionid = params.get('sessionid',0)    
-        nerfreals[sessionid].set_custom_state(params['audiotype'],params['reinit'])
+    sessionid = params.get("sessionid", 0)
+    nerfreals[sessionid].set_curr_state(params["audiotype"], params["reinit"])
 
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg":"ok"}
-            ),
-        )
-    except Exception as e:
-        logger.exception('exception:')
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
-        )
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"code": 0, "data": "ok"}),
+    )
+
 
 async def record(request):
-    try:
-        params = await request.json()
+    """
+    控制数字人录像
+    """
+    params = await request.json()
 
-        sessionid = params.get('sessionid',0)
-        if params['type']=='start_record':
-            # nerfreals[sessionid].put_msg_txt(params['text'])
-            nerfreals[sessionid].start_recording()
-        elif params['type']=='end_record':
-            nerfreals[sessionid].stop_recording()
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": 0, "msg":"ok"}
-            ),
-        )
-    except Exception as e:
-        logger.exception('exception:')
-        return web.Response(
-            content_type="application/json",
-            text=json.dumps(
-                {"code": -1, "msg": str(e)}
-            ),
-        )
+    sessionid = params.get("sessionid", 0)
+    if params["type"] == "start_record":
+        # nerfreals[sessionid].put_msg_txt(params['text'])
+        nerfreals[sessionid].start_recording()
+    elif params["type"] == "end_record":
+        nerfreals[sessionid].stop_recording()
+    return web.Response(
+        content_type="application/json",
+        text=json.dumps({"code": 0, "data": "ok"}),
+    )
+
 
 async def is_speaking(request):
     params = await request.json()
 
-    sessionid = params.get('sessionid',0)
+    sessionid = params.get("sessionid", 0)
     return web.Response(
         content_type="application/json",
-        text=json.dumps(
-            {"code": 0, "data": nerfreals[sessionid].is_speaking()}
-        ),
+        text=json.dumps({"code": 0, "data": nerfreals[sessionid].is_speaking()}),
     )
 
 
@@ -281,16 +462,20 @@ async def on_shutdown(app):
     await asyncio.gather(*coros)
     pcs.clear()
 
-async def post(url,data):
+
+async def post(url, data):
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.post(url,data=data) as response:
+            async with session.post(url, data=data) as response:
                 return await response.text()
     except aiohttp.ClientError as e:
-        logger.info(f'Error: {e}')
+        logger.info(f"Error: {e}")
 
-async def run(push_url,sessionid):
-    nerfreal = await asyncio.get_event_loop().run_in_executor(None, build_nerfreal,sessionid)
+
+async def run(push_url, sessionid):
+    nerfreal = await asyncio.get_event_loop().run_in_executor(
+        None, build_nerfreal, sessionid
+    )
     nerfreals[sessionid] = nerfreal
 
     pc = RTCPeerConnection()
@@ -308,141 +493,458 @@ async def run(push_url,sessionid):
     video_sender = pc.addTrack(player.video)
 
     await pc.setLocalDescription(await pc.createOffer())
-    answer = await post(push_url,pc.localDescription.sdp)
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=answer,type='answer'))
+    answer = await post(push_url, pc.localDescription.sdp)
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=answer, type="answer"))
+
+
 ##########################################
 # os.environ['MKL_SERVICE_FORCE_INTEL'] = '1'
-# os.environ['MULTIPROCESSING_METHOD'] = 'forkserver'                                                    
-if __name__ == '__main__':
-    mp.set_start_method('spawn')
+# os.environ['MULTIPROCESSING_METHOD'] = 'forkserver'
+if __name__ == "__main__":
+    mp.set_start_method("spawn")
     parser = argparse.ArgumentParser()
-    
+    parser.add_argument(
+        "--pose",
+        type=str,
+        default="data/data_kf.json",
+        help="transforms.json, pose source",
+    )
+    parser.add_argument("--au", type=str, default="data/au.csv", help="eye blink area")
+    parser.add_argument("--torso_imgs", type=str, default="", help="torso images path")
+
+    parser.add_argument(
+        "-O", action="store_true", help="equals --fp16 --cuda_ray --exp_eye"
+    )
+
+    parser.add_argument(
+        "--data_range", type=int, nargs="*", default=[0, -1], help="data range to use"
+    )
+    parser.add_argument("--workspace", type=str, default="data/video")
+    parser.add_argument("--seed", type=int, default=0)
+
+    ### training options
+    parser.add_argument("--ckpt", type=str, default="data/pretrained/ngp_kf.pth")
+
+    parser.add_argument(
+        "--num_rays",
+        type=int,
+        default=4096 * 16,
+        help="num rays sampled per image for each training step",
+    )
+    parser.add_argument(
+        "--cuda_ray",
+        action="store_true",
+        help="use CUDA raymarching instead of pytorch",
+    )
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=16,
+        help="max num steps sampled per ray (only valid when using --cuda_ray)",
+    )
+    parser.add_argument(
+        "--num_steps",
+        type=int,
+        default=16,
+        help="num steps sampled per ray (only valid when NOT using --cuda_ray)",
+    )
+    parser.add_argument(
+        "--upsample_steps",
+        type=int,
+        default=0,
+        help="num steps up-sampled per ray (only valid when NOT using --cuda_ray)",
+    )
+    parser.add_argument(
+        "--update_extra_interval",
+        type=int,
+        default=16,
+        help="iter interval to update extra status (only valid when using --cuda_ray)",
+    )
+    parser.add_argument(
+        "--max_ray_batch",
+        type=int,
+        default=4096,
+        help="batch size of rays at inference to avoid OOM (only valid when NOT using --cuda_ray)",
+    )
+
+    ### loss set
+    parser.add_argument("--warmup_step", type=int, default=10000, help="warm up steps")
+    parser.add_argument(
+        "--amb_aud_loss", type=int, default=1, help="use ambient aud loss"
+    )
+    parser.add_argument(
+        "--amb_eye_loss", type=int, default=1, help="use ambient eye loss"
+    )
+    parser.add_argument("--unc_loss", type=int, default=1, help="use uncertainty loss")
+    parser.add_argument(
+        "--lambda_amb", type=float, default=1e-4, help="lambda for ambient loss"
+    )
+
+    ### network backbone options
+    parser.add_argument(
+        "--fp16", action="store_true", help="use amp mixed precision training"
+    )
+
+    parser.add_argument("--bg_img", type=str, default="white", help="background image")
+    parser.add_argument("--fbg", action="store_true", help="frame-wise bg")
+    parser.add_argument(
+        "--exp_eye", action="store_true", help="explicitly control the eyes"
+    )
+    parser.add_argument(
+        "--fix_eye",
+        type=float,
+        default=-1,
+        help="fixed eye area, negative to disable, set to 0-0.3 for a reasonable eye",
+    )
+    parser.add_argument(
+        "--smooth_eye", action="store_true", help="smooth the eye area sequence"
+    )
+
+    parser.add_argument(
+        "--torso_shrink",
+        type=float,
+        default=0.8,
+        help="shrink bg coords to allow more flexibility in deform",
+    )
+
+    ### dataset options
+    parser.add_argument(
+        "--color_space",
+        type=str,
+        default="srgb",
+        help="Color space, supports (linear, srgb)",
+    )
+    parser.add_argument(
+        "--preload",
+        type=int,
+        default=0,
+        help="0 means load data from disk on-the-fly, 1 means preload to CPU, 2 means GPU.",
+    )
+    # (the default value is for the fox dataset)
+    parser.add_argument(
+        "--bound",
+        type=float,
+        default=1,
+        help="assume the scene is bounded in box[-bound, bound]^3, if > 1, will invoke adaptive ray marching.",
+    )
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=4,
+        help="scale camera location into box[-bound, bound]^3",
+    )
+    parser.add_argument(
+        "--offset",
+        type=float,
+        nargs="*",
+        default=[0, 0, 0],
+        help="offset of camera location",
+    )
+    parser.add_argument(
+        "--dt_gamma",
+        type=float,
+        default=1 / 256,
+        help="dt_gamma (>=0) for adaptive ray marching. set to 0 to disable, >0 to accelerate rendering (but usually with worse quality)",
+    )
+    parser.add_argument(
+        "--min_near", type=float, default=0.05, help="minimum near distance for camera"
+    )
+    parser.add_argument(
+        "--density_thresh",
+        type=float,
+        default=10,
+        help="threshold for density grid to be occupied (sigma)",
+    )
+    parser.add_argument(
+        "--density_thresh_torso",
+        type=float,
+        default=0.01,
+        help="threshold for density grid to be occupied (alpha)",
+    )
+    parser.add_argument(
+        "--patch_size",
+        type=int,
+        default=1,
+        help="[experimental] render patches in training, so as to apply LPIPS loss. 1 means disabled, use [64, 32, 16] to enable",
+    )
+
+    parser.add_argument("--init_lips", action="store_true", help="init lips region")
+    parser.add_argument(
+        "--finetune_lips",
+        action="store_true",
+        help="use LPIPS and landmarks to fine tune lips region",
+    )
+    parser.add_argument(
+        "--smooth_lips",
+        action="store_true",
+        help="smooth the enc_a in a exponential decay way...",
+    )
+
+    parser.add_argument("--torso", action="store_true", help="fix head and train torso")
+    parser.add_argument("--head_ckpt", type=str, default="", help="head model")
+
+    ### GUI options
+    parser.add_argument("--gui", action="store_true", help="start a GUI")
+    parser.add_argument("--W", type=int, default=450, help="GUI width")
+    parser.add_argument("--H", type=int, default=450, help="GUI height")
+    parser.add_argument(
+        "--radius",
+        type=float,
+        default=3.35,
+        help="default GUI camera radius from center",
+    )
+    parser.add_argument(
+        "--fovy", type=float, default=21.24, help="default GUI camera fovy"
+    )
+    parser.add_argument(
+        "--max_spp", type=int, default=1, help="GUI rendering max sample per pixel"
+    )
+
+    ### else
+    parser.add_argument(
+        "--att",
+        type=int,
+        default=2,
+        help="audio attention mode (0 = turn off, 1 = left-direction, 2 = bi-direction)",
+    )
+    parser.add_argument(
+        "--aud",
+        type=str,
+        default="",
+        help="audio source (empty will load the default, else should be a path to a npy file)",
+    )
+    parser.add_argument(
+        "--emb",
+        action="store_true",
+        help="use audio class + embedding instead of logits",
+    )
+
+    parser.add_argument(
+        "--ind_dim", type=int, default=4, help="individual code dim, 0 to turn off"
+    )
+    parser.add_argument(
+        "--ind_num",
+        type=int,
+        default=10000,
+        help="number of individual codes, should be larger than training dataset size",
+    )
+
+    parser.add_argument(
+        "--ind_dim_torso",
+        type=int,
+        default=8,
+        help="individual code dim, 0 to turn off",
+    )
+
+    parser.add_argument("--amb_dim", type=int, default=2, help="ambient dimension")
+    parser.add_argument(
+        "--part", action="store_true", help="use partial training data (1/10)"
+    )
+    parser.add_argument(
+        "--part2", action="store_true", help="use partial training data (first 15s)"
+    )
+
+    parser.add_argument(
+        "--train_camera", action="store_true", help="optimize camera pose"
+    )
+    parser.add_argument(
+        "--smooth_path",
+        action="store_true",
+        help="brute-force smooth camera pose trajectory with a window size",
+    )
+    parser.add_argument(
+        "--smooth_path_window", type=int, default=7, help="smoothing window size"
+    )
+
+    # asr
+    parser.add_argument("--asr", action="store_true", help="load asr for real-time app")
+    parser.add_argument(
+        "--asr_wav", type=str, default="", help="load the wav and use as input"
+    )
+    parser.add_argument("--asr_play", action="store_true", help="play out the audio")
+
+    # parser.add_argument('--asr_model', type=str, default='deepspeech')
+    parser.add_argument(
+        "--asr_model", type=str, default="cpierse/wav2vec2-large-xlsr-53-esperanto"
+    )  #
+    # parser.add_argument('--asr_model', type=str, default='facebook/wav2vec2-large-960h-lv60-self')
+    # parser.add_argument('--asr_model', type=str, default='facebook/hubert-large-ls960-ft')
+
+    parser.add_argument("--asr_save_feats", action="store_true")
     # audio FPS
-    parser.add_argument('--fps', type=int, default=50, help="audio fps,must be 50")
+    parser.add_argument("--fps", type=int, default=50)
     # sliding window left-middle-right length (unit: 20ms)
-    parser.add_argument('-l', type=int, default=10)
-    parser.add_argument('-m', type=int, default=8)
-    parser.add_argument('-r', type=int, default=10)
+    parser.add_argument("-l", type=int, default=10)
+    parser.add_argument("-m", type=int, default=8)
+    parser.add_argument("-r", type=int, default=10)
 
-    parser.add_argument('--W', type=int, default=450, help="GUI width")
-    parser.add_argument('--H', type=int, default=450, help="GUI height")
+    parser.add_argument("--fullbody", action="store_true", help="fullbody human")
+    parser.add_argument("--fullbody_img", type=str, default="data/fullbody/img")
+    parser.add_argument("--fullbody_width", type=int, default=580)
+    parser.add_argument("--fullbody_height", type=int, default=1080)
+    parser.add_argument("--fullbody_offset_x", type=int, default=0)
+    parser.add_argument("--fullbody_offset_y", type=int, default=0)
 
-    #musetalk opt
-    parser.add_argument('--avatar_id', type=str, default='avator_1', help="define which avatar in data/avatars")
-    #parser.add_argument('--bbox_shift', type=int, default=5)
-    parser.add_argument('--batch_size', type=int, default=16, help="infer batch")
+    # musetalk opt
+    parser.add_argument("--avatar_id", type=str, default="avator_1")
+    parser.add_argument("--bbox_shift", type=int, default=5)
+    parser.add_argument("--batch_size", type=int, default=16)
 
-    parser.add_argument('--customvideo_config', type=str, default='', help="custom action json")
+    # parser.add_argument('--customvideo', action='store_true', help="custom video")
+    # parser.add_argument('--customvideo_img', type=str, default='data/customvideo/img')
+    # parser.add_argument('--customvideo_imgnum', type=int, default=1)
 
-    parser.add_argument('--tts', type=str, default='edgetts', help="tts service type") #xtts gpt-sovits cosyvoice fishtts tencent doubao indextts2 azuretts
-    parser.add_argument('--REF_FILE', type=str, default="zh-CN-YunxiaNeural",help="参考文件名或语音模型ID，默认值为 edgetts的语音模型ID zh-CN-YunxiaNeural, 若--tts指定为azuretts, 可以使用Azure语音模型ID, 如zh-CN-XiaoxiaoMultilingualNeural")
-    parser.add_argument('--REF_TEXT', type=str, default=None)
-    parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880') # http://localhost:9000
+    parser.add_argument("--customvideo_config", type=str, default="")
+
+    parser.add_argument(
+        "--tts", type=str, default="edgetts"
+    )  # xtts gpt-sovits cosyvoice
+    parser.add_argument("--REF_FILE", type=str, default=None)
+    parser.add_argument("--REF_TEXT", type=str, default=None)
+    parser.add_argument(
+        "--TTS_SERVER", type=str, default="http://127.0.0.1:9880"
+    )  # http://localhost:9000
     # parser.add_argument('--CHARACTER', type=str, default='test')
     # parser.add_argument('--EMOTION', type=str, default='default')
 
-    parser.add_argument('--model', type=str, default='musetalk') #musetalk wav2lip ultralight
+    parser.add_argument("--model", type=str, default="ernerf")  # musetalk wav2lip
 
-    parser.add_argument('--transport', type=str, default='rtcpush') #webrtc rtcpush virtualcam
-    parser.add_argument('--push_url', type=str, default='http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream') #rtmp://localhost/live/livestream
+    parser.add_argument(
+        "--transport", type=str, default="rtcpush"
+    )  # rtmp webrtc rtcpush
+    parser.add_argument(
+        "--push_url",
+        type=str,
+        default="http://localhost:1985/rtc/v1/whip/?app=live&stream=livestream",
+    )  # rtmp://localhost/live/livestream
 
-    parser.add_argument('--max_session', type=int, default=1)  #multi session count
-    parser.add_argument('--listenport', type=int, default=8010, help="web listen port")
-
+    parser.add_argument("--max_session", type=int, default=100)  # multi session count
+    parser.add_argument("--listenport", type=int, default=8010)
+    # parser.add_argument('--loglevel', type=str, default='quiet')
     opt = parser.parse_args()
-    #app.config.from_object(opt)
-    #print(app.config)
+    # app.config.from_object(opt)
+    # print(app.config)
     opt.customopt = []
-    if opt.customvideo_config!='':
-        with open(opt.customvideo_config,'r') as file:
+    if opt.customvideo_config != "":
+        with open(opt.customvideo_config, "r") as file:
             opt.customopt = json.load(file)
 
-    # if opt.model == 'ernerf':       
-    #     from nerfreal import NeRFReal,load_model,load_avatar
-    #     model = load_model(opt)
-    #     avatar = load_avatar(opt) 
-    if opt.model == 'musetalk':
-        from musereal import MuseReal,load_model,load_avatar,warm_up
+    if opt.model == "ernerf":
+        from nerfreal import NeRFReal, load_model, load_avatar
+
+        model = load_model(opt)
+        avatar = load_avatar(opt)
+
+        # we still need test_loader to provide audio features for testing.
+        # for k in range(opt.max_session):
+        #     opt.sessionid=k
+        #     nerfreal = NeRFReal(opt, trainer, test_loader,audio_processor,audio_model)
+        #     nerfreals.append(nerfreal)
+    elif opt.model == "musetalk":
+        from musereal import MuseReal, load_model, load_avatar, warm_up
+
         logger.info(opt)
         model = load_model()
-        avatar = load_avatar(opt.avatar_id) 
-        warm_up(opt.batch_size,model)      
-    elif opt.model == 'wav2lip':
-        from lipreal import LipReal,load_model,load_avatar,warm_up
+        avatar = load_avatar(opt.avatar_id)
+        warm_up(opt.batch_size, model)
+        # for k in range(opt.max_session):
+        #     opt.sessionid=k
+        #     nerfreal = MuseReal(opt,audio_processor,vae, unet, pe,timesteps)
+        #     nerfreals.append(nerfreal)
+    elif opt.model == "wav2lip":
+        from lipreal import LipReal, load_model, load_avatar, warm_up
+
         logger.info(opt)
         model = load_model("./models/wav2lip.pth")
         avatar = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size,model,256)
-    elif opt.model == 'ultralight':
-        from lightreal import LightReal,load_model,load_avatar,warm_up
+        warm_up(opt.batch_size, model, 256)
+        # for k in range(opt.max_session):
+        #     opt.sessionid=k
+        #     nerfreal = LipReal(opt,model)
+        #     nerfreals.append(nerfreal)
+    elif opt.model == "ultralight":
+        from lightreal import LightReal, load_model, load_avatar, warm_up
+
         logger.info(opt)
         model = load_model(opt)
         avatar = load_avatar(opt.avatar_id)
-        warm_up(opt.batch_size,avatar,160)
+        warm_up(opt.batch_size, avatar, 160)
 
-    # if opt.transport=='rtmp':
-    #     thread_quit = Event()
-    #     nerfreals[0] = build_nerfreal(0)
-    #     rendthrd = Thread(target=nerfreals[0].render,args=(thread_quit,))
-    #     rendthrd.start()
-    if opt.transport=='virtualcam':
+    if opt.transport == "rtmp":
         thread_quit = Event()
         nerfreals[0] = build_nerfreal(0)
-        rendthrd = Thread(target=nerfreals[0].render,args=(thread_quit,))
+        rendthrd = Thread(target=nerfreals[0].render, args=(thread_quit,))
         rendthrd.start()
 
     #############################################################################
-    appasync = web.Application(client_max_size=1024**2*100)
+    appasync = web.Application()
     appasync.on_shutdown.append(on_shutdown)
     appasync.router.add_post("/offer", offer)
     appasync.router.add_post("/human", human)
     appasync.router.add_post("/humanaudio", humanaudio)
     appasync.router.add_post("/set_audiotype", set_audiotype)
     appasync.router.add_post("/record", record)
-    appasync.router.add_post("/interrupt_talk", interrupt_talk)
     appasync.router.add_post("/is_speaking", is_speaking)
-    appasync.router.add_static('/',path='web')
+    appasync.router.add_post("/speecheval", speecheval)
+    appasync.router.add_post("/audio2text", audio2text)
+    appasync.router.add_post("/preprocess", preprocess)
+    appasync.router.add_post("/clear", clear)
+    appasync.router.add_post("/login", login)
+    appasync.router.add_static("/", path="web")
 
     # Configure default CORS settings.
-    cors = aiohttp_cors.setup(appasync, defaults={
+    cors = aiohttp_cors.setup(
+        appasync,
+        defaults={
             "*": aiohttp_cors.ResourceOptions(
                 allow_credentials=True,
                 expose_headers="*",
                 allow_headers="*",
             )
-        })
+        },
+    )
     # Configure CORS on all routes.
     for route in list(appasync.router.routes()):
         cors.add(route)
 
-    pagename='webrtcapi.html'
-    if opt.transport=='rtmp':
-        pagename='echoapi.html'
-    elif opt.transport=='rtcpush':
-        pagename='rtcpushapi.html'
-    logger.info('start http server; http://<serverip>:'+str(opt.listenport)+'/'+pagename)
-    logger.info('如果使用webrtc，推荐访问webrtc集成前端: http://<serverip>:'+str(opt.listenport)+'/dashboard.html')
+    pagename = "webrtcapi.html"
+    if opt.transport == "rtmp":
+        pagename = "echoapi.html"
+    elif opt.transport == "rtcpush":
+        pagename = "rtcpushapi.html"
+
+    logger.info(
+        "local host: http://localhost:" + str(opt.listenport) + "/" + "dashboard.html"
+    )
+    logger.info(
+        "start http server; http://<serverip>:" + str(opt.listenport) + "/" + pagename
+    )
+    logger.info(
+        "如果使用webrtc，推荐访问webrtc集成前端: http://<serverip>:"
+        + str(opt.listenport)
+        + "/dashboard.html"
+    )
+
     def run_server(runner):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(runner.setup())
-        site = web.TCPSite(runner, '0.0.0.0', opt.listenport)
+        site = web.TCPSite(runner, "0.0.0.0", opt.listenport)
         loop.run_until_complete(site.start())
-        if opt.transport=='rtcpush':
+        if opt.transport == "rtcpush":
             for k in range(opt.max_session):
                 push_url = opt.push_url
-                if k!=0:
-                    push_url = opt.push_url+str(k)
-                loop.run_until_complete(run(push_url,k))
-        loop.run_forever()    
-    #Thread(target=run_server, args=(web.AppRunner(appasync),)).start()
+                if k != 0:
+                    push_url = opt.push_url + str(k)
+                loop.run_until_complete(run(push_url, k))
+        loop.run_forever()
+
+    # Thread(target=run_server, args=(web.AppRunner(appasync),)).start()
     run_server(web.AppRunner(appasync))
 
-    #app.on_shutdown.append(on_shutdown)
-    #app.router.add_post("/offer", offer)
+    # app.on_shutdown.append(on_shutdown)
+    # app.router.add_post("/offer", offer)
 
     # print('start websocket server')
     # server = pywsgi.WSGIServer(('0.0.0.0', 8000), app, handler_class=WebSocketHandler)
     # server.serve_forever()
-    
-    

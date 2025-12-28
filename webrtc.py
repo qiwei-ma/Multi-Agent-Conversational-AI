@@ -29,7 +29,7 @@ import numpy as np
 
 AUDIO_PTIME = 0.020  # 20ms audio packetization
 VIDEO_CLOCK_RATE = 90000
-VIDEO_PTIME = 0.040 #1 / 25  # 30fps
+VIDEO_PTIME = 1 / 25  # 30fps
 VIDEO_TIME_BASE = fractions.Fraction(1, VIDEO_CLOCK_RATE)
 SAMPLE_RATE = 16000
 AUDIO_TIME_BASE = fractions.Fraction(1, SAMPLE_RATE)
@@ -54,9 +54,8 @@ class PlayerStreamTrack(MediaStreamTrack):
         super().__init__()  # don't forget this!
         self.kind = kind
         self._player = player
-        self._queue = asyncio.Queue(maxsize=100)
+        self._queue = asyncio.Queue()
         self.timelist = [] #记录最近包的时间戳
-        self.current_frame_count = 0
         if self.kind == 'video':
             self.framecount = 0
             self.lasttime = time.perf_counter()
@@ -73,8 +72,7 @@ class PlayerStreamTrack(MediaStreamTrack):
             if hasattr(self, "_timestamp"):
                 #self._timestamp = (time.time()-self._start) * VIDEO_CLOCK_RATE
                 self._timestamp += int(VIDEO_PTIME * VIDEO_CLOCK_RATE)
-                self.current_frame_count += 1
-                wait = self._start + self.current_frame_count * VIDEO_PTIME - time.time()
+                wait = self._start + (self._timestamp / VIDEO_CLOCK_RATE) - time.time()
                 # wait = self.timelist[0] + len(self.timelist)*VIDEO_PTIME - time.time()               
                 if wait>0:
                     await asyncio.sleep(wait)
@@ -91,8 +89,7 @@ class PlayerStreamTrack(MediaStreamTrack):
             if hasattr(self, "_timestamp"):
                 #self._timestamp = (time.time()-self._start) * SAMPLE_RATE
                 self._timestamp += int(AUDIO_PTIME * SAMPLE_RATE)
-                self.current_frame_count += 1
-                wait = self._start + self.current_frame_count * AUDIO_PTIME - time.time()
+                wait = self._start + (self._timestamp / SAMPLE_RATE) - time.time()
                 # wait = self.timelist[0] + len(self.timelist)*AUDIO_PTIME - time.time()
                 if wait>0:
                     await asyncio.sleep(wait)
@@ -130,7 +127,7 @@ class PlayerStreamTrack(MediaStreamTrack):
         pts, time_base = await self.next_timestamp()
         frame.pts = pts
         frame.time_base = time_base
-        if eventpoint and self._player is not None:
+        if eventpoint:
             self._player.notify(eventpoint)
         if frame is None:
             self.stop()
@@ -147,10 +144,6 @@ class PlayerStreamTrack(MediaStreamTrack):
     
     def stop(self):
         super().stop()
-        # Drain & delete remaining frames
-        while not self._queue.empty():
-            item = self._queue.get_nowait()
-            del item
         if self._player is not None:
             self._player._stop(self)
             self._player = None
@@ -183,8 +176,7 @@ class HumanPlayer:
         self.__container = nerfreal
 
     def notify(self,eventpoint):
-        if self.__container is not None:
-            self.__container.notify(eventpoint)
+        self.__container.notify(eventpoint)
 
     @property
     def audio(self) -> MediaStreamTrack:
