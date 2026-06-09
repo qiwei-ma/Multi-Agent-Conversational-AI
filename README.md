@@ -1,59 +1,83 @@
-<div align="center">
-
 # Multi-Agent-Spoken
 
-</div>
+This repository contains the **frontend digital-human interface and related runtime glue** for the spoken EFL practice system described in our paper. It does **not** include the full intelligent-agent backend implementation; the multi-agent workflow in the paper was orchestrated separately.
 
-## TODO
-- [x] Coze API
-- [x] 评分系统
-- [x] 对话展示
-- [x] 输入检测
-- [x] 模型
-- [x] 音色
-- [x] 界面美化
-- [x] 手机适配
-- [x] 部署
+The interface supports browser-based spoken interaction, WebRTC streaming, digital-human presentation, dialogue display, input handling, scoring display, and TTS/avatar integration for the experimental system.
 
-# Start 
-## Linux
-1. 环境配置
-```
+## System Context
+
+The paper studies a multi-agent AI system for English as a Foreign Language (EFL) speaking practice. The full research system combines a lightweight digital-human user interface, collaborative agents, and backend memory/data services. This repository corresponds to the **user-interface-facing implementation** used to present the digital human and support real-time spoken practice.
+
+![System architecture](./assets/paper/system-architecture.jpg)
+
+## Interface
+
+The user interface was designed to reduce text-heavy interaction and make speaking practice feel more conversational. It uses a lightweight digital human, lip synchronization, mixed text/speech interaction, and pronunciation-related display cues.
+
+![User interface](./assets/paper/user-interface.jpg)
+
+In the paper, the frontend works with preprocessing and agent services to support hybrid Chinese-English input, contextual dialogue, and proficiency-adaptive feedback. The agent orchestration itself is outside this repository.
+
+![Input preprocessing](./assets/paper/input-preprocessing.jpg)
+
+
+## Quick Start
+
+### Linux
+
+1. Configure the environment.
+
+```bash
 conda create -n nerfstream python=3.10
 conda activate nerfstream
-# If the cuda version is not 11.3 (confirm the version by running nvidia-smi), install the corresponding version of pytorch according to <https://pytorch.org/get-started/previous-versions/> 
+# If the CUDA version is not 11.3, install the matching PyTorch version from:
+# https://pytorch.org/get-started/previous-versions/
 conda install pytorch==1.12.1 torchvision==0.13.1 cudatoolkit=11.3 -c pytorch
 pip install -r requirements.txt
-# If you need to train the ernerf model, install the following libraries
-# pip install "git+https://github.com/facebookresearch/pytorch3d.git"
-# pip install tensorflow-gpu==2.8.0
-# pip install --upgrade "protobuf<=3.20.1"
 ```
-2. 端口开放
-```
+
+2. Open required ports.
+
+```bash
 firewall-cmd --zone=public ---permanent -add-port=8010/tcp
 firewall-cmd --zone=public ---permanent -add-port=1-65535/udp
 ```
 
-3. 运行
-```
+3. Run the service.
+
+```bash
 python app.py --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar5 --tts tencent --REF_FILE 101006 --customvideo_config data/custom_config.json
-python app.py --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar5 --tts tencent --REF_FILE 501009 --customvideo_config data/custom_config.json (大模型音色字数限制：100000)
+python app.py --transport webrtc --model wav2lip --avatar_id wav2lip256_avatar5 --tts tencent --REF_FILE 501009 --customvideo_config data/custom_config.json
 ```
 
-4. 查看
-```
+4. Open the web pages.
+
+```text
 http://127.0.0.1:8010/login.html
 http://127.0.0.1:8010/dashboard.html
 ```
 
-5. 视频编排
-- 素材生成
-```
-ffmpeg -i xxx.mp4 -vf fps=25 -qmin 1 -q:v 1 -start_number 0 data/customvideo/image/%08d.png
-# 生成空音频
-ffmpeg -f lavfi -i anullsrc=channel_layout=mono:sample_rate=16000 -t 10 -acodec pcm_s16le data\customvideo\audio.wav
-```
 
-# Acknowledgements
-https://github.com/lipku/LiveTalking 
+## Acknowledgements
+
+This frontend builds on [LiveTalking](https://github.com/lipku/LiveTalking).
+
+## Citation
+
+If you find this repository useful, please cite:
+
+```bibtex
+@article{multi2026zhang,
+title ={Multi-agent vs. single-agent AI for EFL speaking practice: A controlled experiment with hybrid input, contextual dialogue, and proficiency-adaptive feedback},
+author ={Jun Zhang and Qiwei Ma and Yu Zhang and Xiaoming Cao},
+journal ={Educational Technology & Society},
+volume ={29},
+number ={2},
+year ={2026},
+month ={Apr},
+pages ={297-322},
+ISSN ={1176-3647},
+publisher ={International Forum of Educational Technology & Society},
+DOI ={10.30191/ETS.202604_29(2).SP05},
+}
+```
