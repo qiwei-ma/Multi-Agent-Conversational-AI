@@ -27,3 +27,4 @@ dist
 audio2text/test3.mp3
 user.db
 .env
+mineru_output/

@@ -4,21 +4,51 @@ This repository contains the **frontend digital-human interface and related runt
 
 The interface supports browser-based spoken interaction, WebRTC streaming, digital-human presentation, dialogue display, input handling, scoring display, and TTS/avatar integration for the experimental system.
 
-## System Context
+## System Architecture
 
 The paper studies a multi-agent AI system for English as a Foreign Language (EFL) speaking practice. The full research system combines a lightweight digital-human user interface, collaborative agents, and backend memory/data services. This repository corresponds to the **user-interface-facing implementation** used to present the digital human and support real-time spoken practice.
 
-![System architecture](./assets/paper/system-architecture.jpg)
+Figure 1 presents the complete layered system. The interface accepts voice or text and displays digital-human output. Collaborative agents coordinate dialogue tasks, while backend storage preserves conversation and learning records.
 
-## Interface
+![Figure 1. Layered architecture of the multi-agent speaking practice system](./assets/paper/figure-1-system-architecture.png)
+
+*Figure 1. Layered architecture of the multi-agent speaking practice system.*
+
+## User Interface
 
 The user interface was designed to reduce text-heavy interaction and make speaking practice feel more conversational. It uses a lightweight digital human, lip synchronization, mixed text/speech interaction, and pronunciation-related display cues.
 
-![User interface](./assets/paper/user-interface.jpg)
+![Figure 2. Digital-human user interface used in the study](./assets/paper/figure-2-user-interface.png)
 
-In the paper, the frontend works with preprocessing and agent services to support hybrid Chinese-English input, contextual dialogue, and proficiency-adaptive feedback. The agent orchestration itself is outside this repository.
+*Figure 2. Digital-human user interface used in the study.*
 
-![Input preprocessing](./assets/paper/input-preprocessing.jpg)
+## Agent Workflow
+
+The following diagrams document the surrounding agent workflow evaluated in the paper. Their orchestration is outside this repository. The frontend works with these services to support hybrid Chinese-English input, contextual dialogue, and proficiency-adaptive feedback.
+
+### Input Preprocessing
+
+Speech input is transcribed, cleaned, and scored before it enters the dialogue workflow. The preprocessing agents remove disfluencies, correct ambiguous recognition results, and retain pronunciation evidence. An intent agent then selects role-playing or free conversation.
+
+![Figure 3. Input preprocessing and workflow selection](./assets/paper/figure-3-input-preprocessing.png)
+
+*Figure 3. Input preprocessing and workflow selection.*
+
+### Response Generation
+
+Dialogue agents are selected according to the learner's CEFR level. The feedback agent reviews each candidate response and returns unsuitable responses for regeneration. Conversation history and learner records provide context for later turns.
+
+![Figure 4. Response generation and adaptive feedback loop](./assets/paper/figure-4-response-generation-agents.png)
+
+*Figure 4. Response generation and adaptive feedback loop.*
+
+### Dialogue Supervision
+
+Safety, emotional sentiment, and bias agents evaluate each response. Any rejection triggers another generation cycle. Approved responses proceed to text-to-speech and lip-synchronised digital-human output.
+
+![Figure 5. Dialogue supervision and digital-human output](./assets/paper/figure-5-dialogue-supervision-agents.png)
+
+*Figure 5. Dialogue supervision and digital-human output.*
 
 
 ## Quick Start
